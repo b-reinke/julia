@@ -290,7 +290,7 @@ mutable struct InferenceState
 
         currbb = currpc = 1
         ip = BitSet(1) # TODO BitSetBoundedMinPrioritySet(1)
-        handler_at, handlers = compute_trycatch(code, BitSet())
+        handler_at, handlers = compute_trycatch(code)
         nssavalues = src.ssavaluetypes::Int
         ssavalue_uses = find_ssavalue_uses(code, nssavalues)
         nstmts = length(code)
@@ -335,7 +335,6 @@ mutable struct InferenceState
         restrict_abstract_call_sites = isa(def, Module)
 
         # some more setups
-        InferenceParams(interp).unoptimize_throw_blocks && mark_throw_blocks!(src, handler_at)
         !iszero(cache_mode & CACHE_MODE_LOCAL) && push!(get_inference_cache(interp), result)
 
         this = new(
@@ -368,10 +367,10 @@ is_inferred(result::InferenceResult) = result.result !== nothing
 
 was_reached(sv::InferenceState, pc::Int) = sv.ssavaluetypes[pc] !== NOT_FOUND
 
-compute_trycatch(ir::IRCode, ip::BitSet) = compute_trycatch(ir.stmts.stmt, ip, ir.cfg.blocks)
+compute_trycatch(ir::IRCode) = compute_trycatch(ir.stmts.stmt, ir.cfg.blocks)
 
 """
-    compute_trycatch(code, ip [, bbs]) -> (handler_at, handlers)
+    compute_trycatch(code[, bbs]) -> (handler_at, handlers)
 
 Given the code of a function, compute, at every statement, the current
 try/catch handler, and the current exception stack top. This function returns
@@ -382,7 +381,7 @@ a tuple of:
 
     2. `handlers`: A `TryCatchFrame` vector of handlers
 """
-function compute_trycatch(code::Vector{Any}, ip::BitSet, bbs::Union{Vector{BasicBlock}, Nothing}=nothing)
+function compute_trycatch(code::Vector{Any}, bbs::Union{Vector{BasicBlock}, Nothing}=nothing)
     # The goal initially is to record the frame like this for the state at exit:
     # 1: (enter 3) # == 0
     # 3: (expr)    # == 1
@@ -391,7 +390,7 @@ function compute_trycatch(code::Vector{Any}, ip::BitSet, bbs::Union{Vector{Basic
     # then we can find all `try`s by walking backwards from :enter statements,
     # and all `catch`es by looking at the statement after the :enter
     n = length(code)
-    empty!(ip)
+    ip = BitSet()
     ip.offset = 0 # for _bits_findnext
     push!(ip, n + 1)
     handler_at = fill((0, 0), n)
@@ -1007,30 +1006,6 @@ bail_out_apply(::AbstractInterpreter, state::InferenceLoopState, ::InferenceStat
     state.rt === Any
 bail_out_apply(::AbstractInterpreter, state::InferenceLoopState, ::IRInterpretationState) =
     state.rt === Any
-
-function should_infer_this_call(interp::AbstractInterpreter, sv::InferenceState)
-    if InferenceParams(interp).unoptimize_throw_blocks
-        # Disable inference of calls in throw blocks, since we're unlikely to
-        # need their types. There is one exception however: If up until now, the
-        # function has not seen any side effects, we would like to make sure there
-        # aren't any in the throw block either to enable other optimizations.
-        if is_stmt_throw_block(get_curr_ssaflag(sv))
-            should_infer_for_effects(sv) || return false
-        end
-    end
-    return true
-end
-function should_infer_for_effects(sv::InferenceState)
-    def = sv.linfo.def
-    def isa Method || return false # toplevel frame will not be [semi-]concrete-evaluated
-    effects = sv.ipo_effects
-    override = decode_effects_override(def.purity)
-    effects.consistent === ALWAYS_FALSE && !is_effect_overridden(override, :consistent) && return false
-    effects.effect_free === ALWAYS_FALSE && !is_effect_overridden(override, :effect_free) && return false
-    !effects.terminates && !is_effect_overridden(override, :terminates_globally) && return false
-    return true
-end
-should_infer_this_call(::AbstractInterpreter, ::IRInterpretationState) = true
 
 add_remark!(::AbstractInterpreter, ::InferenceState, remark) = return
 add_remark!(::AbstractInterpreter, ::IRInterpretationState, remark) = return
