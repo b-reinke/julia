@@ -1313,7 +1313,7 @@ namespace {
 
         CompilerT(orc::IRSymbolMapper::ManglingOptions MO, TargetMachine &TM) JL_NOTSAFEPOINT
             : orc::IRCompileLayer::IRCompiler(MO) {
-            for (size_t i = 0; i < N; ++i) {
+            for (size_t i = 1; i < N; ++i) { // Avoid the 0 optimization compiler because it has several issues
                 TMs[i] = std::make_unique<JuliaOJIT::ResourcePool<std::unique_ptr<TargetMachine>>>(TMCreator(TM, i));
             }
         }
@@ -1326,6 +1326,7 @@ namespace {
             } else {
                 PoolIdx = jl_options.opt_level;
             }
+            PoolIdx = std::max(PoolIdx, (size_t)1);
             assert(PoolIdx < N && "Invalid optimization level for compiler!");
             return orc::SimpleCompiler(****TMs[PoolIdx])(M);
         }
