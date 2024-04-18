@@ -604,9 +604,11 @@ CodeGenOpt::Level CodeGenOptLevelFor(int optlevel)
 #ifdef DISABLE_OPT
     return CodeGenOpt::None;
 #else
-    return optlevel < 1 ? CodeGenOpt::None :
-        optlevel == 2 ? CodeGenOpt::Default :
-        CodeGenOpt::Aggressive;
+    if (optlevel <= 0)
+        return CodeGenOpt::None;
+    if (optlevel <= 2)
+        return CodeGenOpt::Default;
+    return CodeGenOpt::Aggressive;
 #endif
 }
 
