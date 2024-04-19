@@ -286,6 +286,9 @@ function new_expr_effect_flags(𝕃ₒ::AbstractLattice, args::Vector{Any}, src:
     return (false, true, true)
 end
 
+assume_bindings_static(ir::IRCode) = ir.assume_bindings_static
+assume_bindings_static(compact::IncrementalCompact) = assume_bindings_static(compact.ir)
+
 """
     stmt_effect_flags(stmt, rt, src::Union{IRCode,IncrementalCompact}) ->
         (consistent::Bool, removable::Bool, nothrow::Bool)
@@ -301,7 +304,12 @@ function stmt_effect_flags(𝕃ₒ::AbstractLattice, @nospecialize(stmt), @nospe
     isa(stmt, GotoNode) && return (true, false, true)
     isa(stmt, GotoIfNot) && return (true, false, ⊑(𝕃ₒ, argextype(stmt.cond, src), Bool))
     if isa(stmt, GlobalRef)
-        nothrow = consistent = isdefinedconst_globalref(stmt)
+        if assume_bindings_static(src)
+            nothrow = isdefined_globalref(stmt)
+            consistent = nothrow & isconst(stmt)
+        else
+            nothrow = consistent = isdefinedconst_globalref(stmt)
+        end
         return (consistent, nothrow, nothrow)
     elseif isa(stmt, Expr)
         (; head, args) = stmt
@@ -1131,7 +1139,6 @@ function convert_to_ircode(ci::CodeInfo, sv::OptimizationState)
     # Go through and add an unreachable node after every
     # Union{} call. Then reindex labels.
     stmtinfo = sv.stmt_info
-    meta = Expr[]
     idx = 1
     oldidx = 1
     nstmts = length(code)
@@ -1231,9 +1238,7 @@ function convert_to_ircode(ci::CodeInfo, sv::OptimizationState)
         renumber_cfg_stmts!(sv.cfg, blockchangemap)
     end
 
-    for i = 1:length(code)
-        code[i] = process_meta!(meta, code[i])
-    end
+    meta = process_meta!(code)
     strip_trailing_junk!(code, ssavaluetypes, ssaflags, di, sv.cfg, stmtinfo)
     types = Any[]
     stmts = InstructionStream(code, types, stmtinfo, codelocs, ssaflags)
@@ -1241,15 +1246,20 @@ function convert_to_ircode(ci::CodeInfo, sv::OptimizationState)
     # types of call arguments only once `slot2reg` converts this `IRCode` to the SSA form
     # and eliminates slots (see below)
     argtypes = sv.slottypes
-    return IRCode(stmts, sv.cfg, di, argtypes, meta, sv.sptypes)
+    return IRCode(stmts, sv.cfg, di, argtypes, meta, sv.sptypes,
+                  InferenceParams(sv.inlining.interp).assume_bindings_static)
 end
 
-function process_meta!(meta::Vector{Expr}, @nospecialize stmt)
-    if isexpr(stmt, :meta) && length(stmt.args) ≥ 1
-        push!(meta, stmt)
-        return nothing
+function process_meta!(code::Vector{Any})
+    meta = Expr[]
+    for i = 1:length(code)
+        stmt = code[i]
+        if isexpr(stmt, :meta) && length(stmt.args) ≥ 1
+            push!(meta, stmt)
+            code[i] = nothing
+        end
     end
-    return stmt
+    return meta
 end
 
 function slot2reg(ir::IRCode, ci::CodeInfo, sv::OptimizationState)
