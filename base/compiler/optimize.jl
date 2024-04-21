@@ -286,9 +286,6 @@ function new_expr_effect_flags(𝕃ₒ::AbstractLattice, args::Vector{Any}, src:
     return (false, true, true)
 end
 
-assume_bindings_static(ir::IRCode) = ir.assume_bindings_static
-assume_bindings_static(compact::IncrementalCompact) = assume_bindings_static(compact.ir)
-
 """
     stmt_effect_flags(stmt, rt, src::Union{IRCode,IncrementalCompact}) ->
         (consistent::Bool, removable::Bool, nothrow::Bool)
@@ -1238,7 +1235,7 @@ function convert_to_ircode(ci::CodeInfo, sv::OptimizationState)
         renumber_cfg_stmts!(sv.cfg, blockchangemap)
     end
 
-    meta = process_meta!(code)
+    meta = process_meta!(code, InferenceParams(sv.inlining.interp).assume_bindings_static)
     strip_trailing_junk!(code, ssavaluetypes, ssaflags, di, sv.cfg, stmtinfo)
     types = Any[]
     stmts = InstructionStream(code, types, stmtinfo, codelocs, ssaflags)
@@ -1246,11 +1243,10 @@ function convert_to_ircode(ci::CodeInfo, sv::OptimizationState)
     # types of call arguments only once `slot2reg` converts this `IRCode` to the SSA form
     # and eliminates slots (see below)
     argtypes = sv.slottypes
-    return IRCode(stmts, sv.cfg, di, argtypes, meta, sv.sptypes,
-                  InferenceParams(sv.inlining.interp).assume_bindings_static)
+    return IRCode(stmts, sv.cfg, di, argtypes, meta, sv.sptypes)
 end
 
-function process_meta!(code::Vector{Any})
+function process_meta!(code::Vector{Any}, assume_bindings_static::Bool)
     meta = Expr[]
     for i = 1:length(code)
         stmt = code[i]
@@ -1259,8 +1255,23 @@ function process_meta!(code::Vector{Any})
             code[i] = nothing
         end
     end
+    # Temporarily put the configurations of `AbstractInterpreter` that created this `IRCode`
+    # into `meta::Vector{Any}`, making it accessible for various optimization passes.
+    # The `replace_code_newstyle!` needs to filter out these temporary nodes inserted here.
+    pushfirst!(meta, Expr(:assume_bindings_static, assume_bindings_static))
     return meta
 end
+
+function assume_bindings_static(ir::IRCode)
+    for node = ir.meta
+        node.head === :meta && break
+        if node.head === :assume_bindings_static
+            return node.args[1]::Bool
+        end
+    end
+    return false
+end
+assume_bindings_static(compact::IncrementalCompact) = assume_bindings_static(compact.ir)
 
 function slot2reg(ir::IRCode, ci::CodeInfo, sv::OptimizationState)
     # need `ci` for the slot metadata, IR for the code
